@@ -1,4 +1,4 @@
-const CACHE_NAME = 'ai-coach-v4-cache';
+const CACHE_NAME = 'ai-coach-v5-cache';
 // オフラインにするために先回りしてスマホに保存するファイルのリスト
 const ASSETS = [
   './index.html',
