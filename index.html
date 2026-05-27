@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AIシュートフォーム・コーチ V4 (タイムコントロール搭載)</title>
+    <title>AIシュートフォーム・コーチ V5 (インカメラズーム搭載)</title>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
     <style>
@@ -34,18 +34,24 @@
         
         .speed-select { padding: 9px 15px; font-size: 15px; border-radius: 20px; border: 2px solid #ccd0d5; background: white; font-weight: bold; cursor: pointer; }
 
-        /* タイムライン（シークバー）の装飾 */
+        /* タイムライン */
         .timeline-container { display: flex; align-items: center; gap: 10px; width: 100%; max-width: 600px; padding: 0 10px; }
         .seek-bar { flex: 1; height: 8px; cursor: pointer; accent-color: #1877f2; }
         .time-display { font-family: monospace; font-size: 14px; color: #606770; font-weight: bold; min-width: 90px; text-align: center; }
 
-        /* 右側：解析結果と静止画エリア */
+        /* ズームコントロールパネル（追加） */
+        .zoom-controls { background: #f0f2f5; padding: 12px 18px; border-radius: 10px; width: 100%; max-width: 584px; display: flex; gap: 20px; flex-wrap: wrap; justify-content: space-between; box-sizing: border-box; }
+        .zoom-item { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 220px; }
+        .zoom-item label { font-size: 14px; font-weight: bold; color: #4a5056; white-space: nowrap; }
+        .zoom-item input[type="range"] { flex: 1; accent-color: #1877f2; cursor: pointer; }
+        .zoom-item span { font-size: 14px; font-weight: bold; color: #1877f2; min-width: 45px; text-align: right; }
+
+        /* 右側：解析結果エリア */
         .analysis-section { flex: 1; display: flex; flex-direction: column; gap: 15px; position: sticky; top: 20px; }
         .box { background: #fff; padding: 15px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); border: 2px solid transparent; }
         #advice-box { border-color: #e4e6eb; }
         #advice-text { font-weight: bold; font-size: 1.1em; color: #1c1e21; white-space: pre-line; line-height: 1.5; }
 
-        /* リリース時の静止画表示エリア */
         #snapshot-box { display: none; text-align: center; }
         #snapshot-box h3 { margin: 0 0 10px; color: #1877f2; font-size: 1em; }
         canvas#snapshot_canvas { width: 100%; border-radius: 8px; border: 3px solid #388e3c; }
@@ -58,8 +64,8 @@
 </head>
 <body>
     <header>
-        <h1>🏀 AIシュートフォーム・コーチ V4</h1>
-        <p class="subtitle">タイムコントロール機能：シークバーや巻き戻しボタンで、見たい瞬間を何度でも</p>
+        <h1>🏀 AIシュートフォーム・コーチ V5</h1>
+        <p class="subtitle">ズーム＆ターゲット特定機能：複数人の中から打っている人だけを自動追従・拡大</p>
     </header>
 
     <div class="main-content">
@@ -74,6 +80,19 @@
                     <span id="time-current" class="time-display">00:00</span>
                     <input type="range" id="seek-bar" class="seek-bar" value="0" min="0" step="0.01" disabled>
                     <span id="time-duration" class="time-display">00:00</span>
+                </div>
+
+                <div class="zoom-controls">
+                    <div class="zoom-item">
+                        <label>🔍 ズーム倍率:</label>
+                        <input type="range" id="zoom-range" min="1.0" max="3.0" step="0.1" value="1.0" disabled>
+                        <span id="zoom-val">1.0x</span>
+                    </div>
+                    <div class="zoom-item">
+                        <label>↔ フォーカス位置:</label>
+                        <input type="range" id="pan-range" min="-1.0" max="1.0" step="0.1" value="0.0" disabled>
+                        <span id="pan-val">中央</span>
+                    </div>
                 </div>
 
                 <div class="btn-group">
@@ -93,7 +112,7 @@
 
         <div class="analysis-section">
             <div id="advice-box" class="box">
-                <div id="advice-text">🏀 動画を選択してください。<br>タイムラインを使って自由な位置から再生・巻き戻しができます。</div>
+                <div id="advice-text">🏀 動画を選択してください。<br>複数人が写っている場合は「フォーカス位置」で狙う人を絞れます。</div>
             </div>
             
             <div id="snapshot-box" class="box">
@@ -123,21 +142,58 @@
         const adviceText = document.getElementById('advice-text');
         const adviceBox = document.getElementById('advice-box');
 
-        let maxElbowAngle = 0; 
-        let isUserSeeking = false; // ユーザーがシークバーを触っているかどうかのフラグ
+        // ズーム用要素（追加）
+        const zoomRange = document.getElementById('zoom-range');
+        const zoomVal = document.getElementById('zoom-val');
+        const panRange = document.getElementById('pan-range');
+        const panVal = document.getElementById('pan-val');
 
-        // 1. MediaPipe Pose設定
+        // 映像切り出し用の隠しキャンバス（追加）
+        const cropCanvas = document.createElement('canvas');
+        const cropCtx = cropCanvas.getContext('2d');
+
+        let maxElbowAngle = 0; 
+        let isUserSeeking = false;
+
+        // 1. MediaPipe Pose設定 (軽量モデル: 0)
         const pose = new Pose({locateFile: (file) => {
             return `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`;
         }});
         pose.setOptions({
-            modelComplexity: 0,
+            modelComplexity: 0, 
             smoothLandmarks: true,
             minDetectionConfidence: 0.5,
             minTrackingConfidence: 0.5
         });
 
-        // 2. AI解析結果の描画ロジック（共通関数化）
+        // 2. 動画の切り出し（ズーム・位置調整）を行う関数（追加）
+        function getCroppedFrame() {
+            const zoom = parseFloat(zoomRange.value);
+            const pan = parseFloat(panRange.value); // -1.0(左) 〜 1.0(右)
+            
+            const vw = videoElement.videoWidth;
+            const vh = videoElement.videoHeight;
+            
+            if (cropCanvas.width !== vw || cropCanvas.height !== vh) {
+                cropCanvas.width = vw;
+                cropCanvas.height = vh;
+            }
+            
+            // 切り出すサイズ
+            const sw = vw / zoom;
+            const sh = vh / zoom;
+            
+            // 左右のずらし量を計算（panが-1で左端、1で右端、0で中央）
+            const maxOffset = (vw - sw) / 2;
+            const sx = maxOffset + maxOffset * pan;
+            const sy = (vh - sh) / 2; // 上下はジャンピングシュートの高さに対応するため中央固定
+            
+            cropCtx.clearRect(0, 0, vw, vh);
+            cropCtx.drawImage(videoElement, sx, sy, sw, sh, 0, 0, vw, vh);
+            return cropCanvas;
+        }
+
+        // 3. AI解析結果の描画ロジック
         function analyzeFrame(results) {
             const w = canvasElement.width;
             const h = canvasElement.height;
@@ -200,10 +256,9 @@
             canvasCtx.restore();
         }
 
-        // メディアパイプの結果イベント登録
         pose.onResults(analyzeFrame);
 
-        // 角度計算
+        // 各種描画用補助関数群
         function calculateAngle(a, b, c) {
             const radians = Math.atan2(c.y - b.y, c.x - b.x) - Math.atan2(a.y - b.y, a.x - b.x);
             let angle = Math.abs(radians * 180.0 / Math.PI);
@@ -211,7 +266,6 @@
             return angle;
         }
 
-        // 身体の軸を描画
         function drawBodyAxis(ctx, shoulder, hip) {
             ctx.beginPath();
             ctx.moveTo(shoulder.x, shoulder.y);
@@ -231,7 +285,6 @@
             ctx.stroke();
         }
 
-        // 理想の直線（青点線）
         function drawIdealLine(ctx, shoulder, wrist) {
             ctx.beginPath();
             ctx.moveTo(shoulder.x, shoulder.y);
@@ -243,7 +296,6 @@
             ctx.setLineDash([]);
         }
 
-        // 角度のアーク
         function drawArcAngle(ctx, center, p1, p2, angle, color) {
             const radius = 50;
             const ang1 = Math.atan2(p1.y - center.y, p1.x - center.x);
@@ -260,7 +312,6 @@
             ctx.globalAlpha = 1.0;
         }
 
-        // 角度テキスト
         function drawTextAngle(ctx, text, pos, color) {
             ctx.fillStyle = color;
             ctx.font = 'bold 36px sans-serif';
@@ -270,7 +321,6 @@
             ctx.fillText(text, pos.x + 30, pos.y);
         }
 
-        // OK/NGマーク
         function drawCheckMark(ctx, w, h, isOk) {
             const centerX = w * 0.85;
             const centerY = h * 0.15;
@@ -295,7 +345,6 @@
             }
         }
 
-        // リリース時の静止画更新
         function updateSnapshot(frameImage, angle) {
             snapshotCanvas.width = canvasElement.width;
             snapshotCanvas.height = canvasElement.height;
@@ -309,12 +358,32 @@
             snapshotBox.style.display = 'block';
         }
 
-        // 時間フォーマット変換 (秒 -> 00:00)
         function formatTime(seconds) {
             const min = Math.floor(seconds / 60);
             const sec = Math.floor(seconds % 60);
             return `${min.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`;
         }
+
+        // スライダーの文字を更新する関数（追加）
+        function updateZoomLabels() {
+            zoomVal.innerText = `${parseFloat(zoomRange.value).toFixed(1)}x`;
+            const pan = parseFloat(panRange.value);
+            if (pan < -0.3) panVal.innerText = "左寄り";
+            else if (pan > 0.3) panVal.innerText = "右寄り";
+            else panVal.innerText = "中央";
+        }
+
+        // スライダーを動かした時に一時停止中でも画面をリアルタイム更新する（追加）
+        async function handleZoomInput() {
+            updateZoomLabels();
+            if (videoElement.readyState >= 2) {
+                const cropped = getCroppedFrame();
+                await pose.send({image: cropped});
+            }
+        }
+
+        zoomRange.addEventListener('input', handleZoomInput);
+        panRange.addEventListener('input', handleZoomInput);
 
         // --- コントロールのイベント処理 ---
 
@@ -335,26 +404,31 @@
                 
                 videoElement.playbackRate = parseFloat(selectSpeed.value);
                 
-                // シークバーの最大値を動画の総時間に設定
                 seekBar.max = videoElement.duration;
                 seekBar.value = 0;
                 timeDuration.innerText = formatTime(videoElement.duration);
                 
+                // ズーム初期化
+                zoomRange.value = 1.0;
+                panRange.value = 0.0;
+                updateZoomLabels();
+
                 videoElement.play();
                 
-                // コントロール類を有効化
+                // 全コントロールを有効化
                 btnPlayPause.disabled = false;
                 btnBack.disabled = false;
                 btnForward.disabled = false;
                 seekBar.disabled = false;
                 selectSpeed.disabled = false;
+                zoomRange.disabled = false;
+                panRange.disabled = false;
                 
                 btnPlayPause.innerText = "一時停止";
                 adviceText.innerText = "🏀 スローモーション解析中...";
             };
         });
 
-        // 動画の再生位置が更新されたとき（再生中）
         videoElement.addEventListener('timeupdate', () => {
             if (!isUserSeeking) {
                 seekBar.value = videoElement.currentTime;
@@ -362,25 +436,22 @@
             }
         });
 
-        // ユーザーがシークバーをドラッグし始めたとき
         seekBar.addEventListener('input', () => {
             isUserSeeking = true;
             videoElement.currentTime = seekBar.value;
             timeCurrent.innerText = formatTime(seekBar.value);
         });
 
-        // ユーザーがシークバーを離したとき
         seekBar.addEventListener('change', () => {
             isUserSeeking = false;
         });
 
-        // ★重要★ スキップ操作やシークバー移動が完了した瞬間のイベント
+        // シーク（時間移動）完了時にズーム枠でAIに送る
         videoElement.addEventListener('seeked', async () => {
-            // 一時停止中であっても、その瞬間の1フレームをAIに強制的に解析させて描画を更新する
-            await pose.send({image: videoElement});
+            const cropped = getCroppedFrame();
+            await pose.send({image: cropped});
         });
 
-        // 「一時停止 / 再生」ボタン
         btnPlayPause.addEventListener('click', () => {
             if (videoElement.paused) {
                 videoElement.play();
@@ -393,36 +464,28 @@
             }
         });
 
-        // 「5秒戻る」ボタン
         btnBack.addEventListener('click', () => {
             videoElement.currentTime = Math.max(0, videoElement.currentTime - 5);
         });
 
-        // 「5秒進む」ボタン
         btnForward.addEventListener('click', () => {
             videoElement.currentTime = Math.min(videoElement.duration, videoElement.currentTime + 5);
         });
 
-        // 「再生速度」変更
         selectSpeed.addEventListener('change', function() {
             videoElement.playbackRate = parseFloat(this.value);
         });
 
-        // 映像ループ処理（再生中用）
+        // 映像ループ処理（再生中：ズーム枠をAIに送信）
         async function processVideo() {
             if (!videoElement.paused && !videoElement.ended) {
-                await pose.send({image: videoElement});
+                const cropped = getCroppedFrame();
+                await pose.send({image: cropped});
             }
             requestAnimationFrame(processVideo);
         }
 
         videoElement.addEventListener('play', processVideo);
-// サービスワーカー（命令書）をブラウザに登録する
-if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('./sw.js')
-    .then(() => console.log('オフライン対応の準備が完了しました！'))
-    .catch((err) => console.error('登録失敗:', err));
-}
     </script>
 </body>
 </html>
