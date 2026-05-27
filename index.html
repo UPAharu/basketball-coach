@@ -167,6 +167,7 @@
         });
 
         // 2. 動画の切り出し（ズーム・位置調整）を行う関数（追加）
+       // 2. 動画の切り出し（ズーム・位置調整）を行う関数（超軽量化バージョン！）
         function getCroppedFrame() {
             const zoom = parseFloat(zoomRange.value);
             const pan = parseFloat(panRange.value); // -1.0(左) 〜 1.0(右)
@@ -174,10 +175,34 @@
             const vw = videoElement.videoWidth;
             const vh = videoElement.videoHeight;
             
-            if (cropCanvas.width !== vw || cropCanvas.height !== vh) {
-                cropCanvas.width = vw;
-                cropCanvas.height = vh;
+            // 【劇的に軽くする魔法】AIに渡す画像の横幅を「最大640px」に制限する
+            const MAX_WIDTH = 640;
+            let targetW = vw;
+            let targetH = vh;
+            
+            if (vw > MAX_WIDTH) {
+                targetW = MAX_WIDTH;
+                targetH = Math.floor(vh * (MAX_WIDTH / vw));
             }
+            
+            if (cropCanvas.width !== targetW || cropCanvas.height !== targetH) {
+                cropCanvas.width = targetW;
+                cropCanvas.height = targetH;
+            }
+            
+            // 切り出すサイズと位置の計算
+            const sw = vw / zoom;
+            const sh = vh / zoom;
+            const maxOffset = (vw - sw) / 2;
+            const sx = maxOffset + maxOffset * pan;
+            const sy = (vh - sh) / 2; 
+            
+            cropCtx.clearRect(0, 0, targetW, targetH);
+            // 動画の一部を切り取って、縮小した軽いキャンバスに貼り付ける
+            cropCtx.drawImage(videoElement, sx, sy, sw, sh, 0, 0, targetW, targetH);
+            
+            return cropCanvas;
+        }
             
             // 切り出すサイズ
             const sw = vw / zoom;
