@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AIシュートフォーム・コーチ V4 (タイムコントロール搭載)</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+    <style>
+        body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #f0f2f5; margin: 0; padding: 0; color: #1c1e21; display: flex; flex-direction: column; align-items: center; }
+        header { background-color: #ffffff; width: 100%; padding: 15px 0; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        h1 { color: #1877f2; margin: 0; font-size: 1.8em; }
+        p.subtitle { color: #606770; margin: 5px 0 0; font-size: 0.9em; }
+
+        .main-content { display: flex; flex-direction: row; gap: 20px; max-width: 1200px; width: 95%; margin-bottom: 30px; align-items: flex-start; }
+        
+        /* 左側：ビデオ表示エリア */
+        .video-section { flex: 2; display: flex; flex-direction: column; align-items: center; background: #fff; padding: 20px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+        .canvas-container { position: relative; width: 100%; border-radius: 8px; overflow: hidden; background: #000; border: 4px solid #fff; box-shadow: 0 2px 4px rgba(0,0,0,0.2); }
+        video { display: none; }
+        canvas#output_canvas { width: 100%; display: block; }
+        
+        /* コントロールパネルの強化 */
+        .controls { margin-top: 15px; display: flex; flex-direction: column; gap: 12px; width: 100%; align-items: center; }
+        .btn-group { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: center; }
+        
+        .upload-btn { padding: 10px 20px; font-size: 15px; cursor: pointer; background: #1877f2; color: white; border: none; border-radius: 20px; font-weight: bold; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .upload-btn:hover { background: #166fe5; }
+        
+        .control-btn { padding: 10px 18px; font-size: 15px; cursor: pointer; background: #42b72a; color: white; border: none; border-radius: 20px; font-weight: bold; }
+        .control-btn:hover { background: #36a420; }
+        .skip-btn { background: #606770; }
+        .skip-btn:hover { background: #4a5056; }
+        
+        .speed-select { padding: 9px 15px; font-size: 15px; border-radius: 20px; border: 2px solid #ccd0d5; background: white; font-weight: bold; cursor: pointer; }
+
+        /* タイムライン（シークバー）の装飾 */
+        .timeline-container { display: flex; align-items: center; gap: 10px; width: 100%; max-width: 600px; padding: 0 10px; }
+        .seek-bar { flex: 1; height: 8px; cursor: pointer; accent-color: #1877f2; }
+        .time-display { font-family: monospace; font-size: 14px; color: #606770; font-weight: bold; min-width: 90px; text-align: center; }
+
+        /* 右側：解析結果と静止画エリア */
+        .analysis-section { flex: 1; display: flex; flex-direction: column; gap: 15px; position: sticky; top: 20px; }
+        .box { background: #fff; padding: 15px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); border: 2px solid transparent; }
+        #advice-box { border-color: #e4e6eb; }
+        #advice-text { font-weight: bold; font-size: 1.1em; color: #1c1e21; white-space: pre-line; line-height: 1.5; }
+
+        /* リリース時の静止画表示エリア */
+        #snapshot-box { display: none; text-align: center; }
+        #snapshot-box h3 { margin: 0 0 10px; color: #1877f2; font-size: 1em; }
+        canvas#snapshot_canvas { width: 100%; border-radius: 8px; border: 3px solid #388e3c; }
+
+        @media (max-width: 768px) {
+            .main-content { flex-direction: column; align-items: center; }
+            .analysis-section { position: static; width: 100%; }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>🏀 AIシュートフォーム・コーチ V4</h1>
+        <p class="subtitle">タイムコントロール機能：シークバーや巻き戻しボタンで、見たい瞬間を何度でも</p>
+    </header>
+
+    <div class="main-content">
+        <div class="video-section">
+            <div class="canvas-container">
+                <video id="video" muted playsinline loop></video>
+                <canvas id="output_canvas"></canvas>
+            </div>
+            
+            <div class="controls">
+                <div class="timeline-container">
+                    <span id="time-current" class="time-display">00:00</span>
+                    <input type="range" id="seek-bar" class="seek-bar" value="0" min="0" step="0.01" disabled>
+                    <span id="time-duration" class="time-display">00:00</span>
+                </div>
+
+                <div class="btn-group">
+                    <input type="file" id="upload-video" accept="video/mp4,video/x-m4v,video/*" class="upload-btn">
+                    <button id="btn-back" class="control-btn skip-btn" disabled>⏪ 5秒戻る</button>
+                    <button id="btn-play-pause" class="control-btn" disabled>一時停止</button>
+                    <button id="btn-forward" class="control-btn skip-btn" disabled>5秒進む ⏩</button>
+                    
+                    <select id="select-speed" class="speed-select" disabled>
+                        <option value="1.0">標準スピード (1.0x)</option>
+                        <option value="0.5" selected>スロー (0.5x)</option>
+                        <option value="0.25">超スロー (0.25x)</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <div class="analysis-section">
+            <div id="advice-box" class="box">
+                <div id="advice-text">🏀 動画を選択してください。<br>タイムラインを使って自由な位置から再生・巻き戻しができます。</div>
+            </div>
+            
+            <div id="snapshot-box" class="box">
+                <h3>📸 リリース時のフォーム (ベストフレーム)</h3>
+                <canvas id="snapshot_canvas"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const videoElement = document.getElementById('video');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const snapshotCanvas = document.getElementById('snapshot_canvas');
+        const snapshotCtx = snapshotCanvas.getContext('2d');
+        const snapshotBox = document.getElementById('snapshot-box');
+        
+        // コントロール用要素
+        const uploadInput = document.getElementById('upload-video');
+        const btnPlayPause = document.getElementById('btn-play-pause');
+        const btnBack = document.getElementById('btn-back');
+        const btnForward = document.getElementById('btn-forward');
+        const seekBar = document.getElementById('seek-bar');
+        const timeCurrent = document.getElementById('time-current');
+        const timeDuration = document.getElementById('time-duration');
+        const selectSpeed = document.getElementById('select-speed');
+        const adviceText = document.getElementById('advice-text');
+        const adviceBox = document.getElementById('advice-box');
+
+        let maxElbowAngle = 0; 
+        let isUserSeeking = false; // ユーザーがシークバーを触っているかどうかのフラグ
+
+        // 1. MediaPipe Pose設定
+        const pose = new Pose({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`;
+        }});
+        pose.setOptions({
+            modelComplexity: 1,
+            smoothLandmarks: true,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+
+        // 2. AI解析結果の描画ロジック（共通関数化）
+        function analyzeFrame(results) {
+            const w = canvasElement.width;
+            const h = canvasElement.height;
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, w, h);
+            canvasCtx.drawImage(results.image, 0, 0, w, h);
+
+            if (results.poseLandmarks) {
+                drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, {color: 'rgba(255, 255, 255, 0.3)', lineWidth: 1});
+                
+                const shoulder = results.poseLandmarks[12]; 
+                const elbow = results.poseLandmarks[14];    
+                const wrist = results.poseLandmarks[16];    
+                const hip = results.poseLandmarks[24];      
+                
+                const sPos = { x: shoulder.x * w, y: shoulder.y * h, vis: shoulder.visibility };
+                const ePos = { x: elbow.x * w, y: elbow.y * h, vis: elbow.visibility };
+                const wPos = { x: wrist.x * w, y: wrist.y * h, vis: wrist.visibility };
+                const hPos = { x: hip.x * w, y: hip.y * h, vis: hip.visibility };
+
+                if (sPos.vis > 0.6 && ePos.vis > 0.6 && wPos.vis > 0.6 && hPos.vis > 0.6) {
+                    drawBodyAxis(canvasCtx, sPos, hPos);
+
+                    const angle = calculateAngle(sPos, ePos, wPos);
+                    const roundedAngle = Math.round(angle);
+
+                    let statusColor = "";
+                    let advice = "";
+
+                    if (roundedAngle < 110) {
+                        statusColor = "#fbc02d"; 
+                        advice = `【タメのフェーズ】\n現在の肘の角度: ${roundedAngle}°\n🏀 ボールを引いた状態です。上体の軸（緑の線）をまっすぐ保ち、下半身のバネを意識しましょう。`;
+                    } else if (roundedAngle >= 110 && roundedAngle < 165) {
+                        statusColor = "#f57c00"; 
+                        advice = `【シュート動作フェーズ】\n現在の肘の角度: ${roundedAngle}°\n🏀 ボールを上に押し上げています。肘が外に開かないよう、リングへまっすぐ向けましょう。`;
+                    } else {
+                        statusColor = "#388e3c"; 
+                        drawIdealLine(canvasCtx, sPos, wPos); 
+
+                        advice = `【リリースのフェーズ】\n現在の肘の角度: ${roundedAngle}°\n🏀 リリースの瞬間です！腕が青い点線（ガイドライン）ときれいに重なっているか確認してください。`;
+
+                        if (roundedAngle >= 170) {
+                            drawCheckMark(canvasCtx, w, h, true); 
+                        } else if (roundedAngle < 165) {
+                            drawCheckMark(canvasCtx, w, h, false); 
+                        }
+
+                        if (roundedAngle > maxElbowAngle) {
+                            maxElbowAngle = roundedAngle;
+                            updateSnapshot(results.image, roundedAngle); 
+                        }
+                    }
+
+                    adviceText.innerText = advice;
+                    adviceBox.style.borderColor = statusColor;
+                    drawArcAngle(canvasCtx, ePos, sPos, wPos, roundedAngle, statusColor); 
+                    drawTextAngle(canvasCtx, `${roundedAngle}°`, ePos, statusColor);      
+                }
+            }
+            canvasCtx.restore();
+        }
+
+        // メディアパイプの結果イベント登録
+        pose.onResults(analyzeFrame);
+
+        // 角度計算
+        function calculateAngle(a, b, c) {
+            const radians = Math.atan2(c.y - b.y, c.x - b.x) - Math.atan2(a.y - b.y, a.x - b.x);
+            let angle = Math.abs(radians * 180.0 / Math.PI);
+            if (angle > 180.0) angle = 360 - angle;
+            return angle;
+        }
+
+        // 身体の軸を描画
+        function drawBodyAxis(ctx, shoulder, hip) {
+            ctx.beginPath();
+            ctx.moveTo(shoulder.x, shoulder.y);
+            ctx.lineTo(shoulder.x, shoulder.y + 150);
+            ctx.lineWidth = 4;
+            ctx.strokeStyle = 'rgba(100, 100, 100, 0.4)';
+            ctx.setLineDash([5, 5]);
+            ctx.stroke();
+
+            ctx.beginPath();
+            ctx.moveTo(shoulder.x, shoulder.y);
+            ctx.lineTo(hip.x, hip.y);
+            ctx.lineWidth = 5;
+            const dev = Math.abs(hip.x - shoulder.x);
+            ctx.strokeStyle = (dev < 15) ? '#388e3c' : '#d32f2f';
+            ctx.setLineDash([]);
+            ctx.stroke();
+        }
+
+        // 理想の直線（青点線）
+        function drawIdealLine(ctx, shoulder, wrist) {
+            ctx.beginPath();
+            ctx.moveTo(shoulder.x, shoulder.y);
+            ctx.lineTo(wrist.x, wrist.y);
+            ctx.lineWidth = 6;
+            ctx.strokeStyle = '#2979ff';
+            ctx.setLineDash([10, 10]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+
+        // 角度のアーク
+        function drawArcAngle(ctx, center, p1, p2, angle, color) {
+            const radius = 50;
+            const ang1 = Math.atan2(p1.y - center.y, p1.x - center.x);
+            const ang2 = Math.atan2(p2.y - center.y, p2.x - center.x);
+            ctx.beginPath();
+            ctx.arc(center.x, center.y, radius, ang1, ang2, ang2 < ang1); 
+            ctx.lineWidth = 10;
+            ctx.strokeStyle = color;
+            ctx.stroke();
+            ctx.globalAlpha = 0.2;
+            ctx.fillStyle = color;
+            ctx.lineTo(center.x, center.y);
+            ctx.fill();
+            ctx.globalAlpha = 1.0;
+        }
+
+        // 角度テキスト
+        function drawTextAngle(ctx, text, pos, color) {
+            ctx.fillStyle = color;
+            ctx.font = 'bold 36px sans-serif';
+            ctx.lineWidth = 4;
+            ctx.strokeStyle = '#000';
+            ctx.strokeText(text, pos.x + 30, pos.y);
+            ctx.fillText(text, pos.x + 30, pos.y);
+        }
+
+        // OK/NGマーク
+        function drawCheckMark(ctx, w, h, isOk) {
+            const centerX = w * 0.85;
+            const centerY = h * 0.15;
+            const size = 60;
+            ctx.lineWidth = 15;
+            ctx.lineCap = 'round';
+            if (isOk) {
+                ctx.strokeStyle = 'rgba(56, 142, 60, 0.8)';
+                ctx.beginPath();
+                ctx.moveTo(centerX - size/2, centerY);
+                ctx.lineTo(centerX - size/5, centerY + size/2);
+                ctx.lineTo(centerX + size/2, centerY - size/2);
+                ctx.stroke();
+            } else {
+                ctx.strokeStyle = 'rgba(211, 47, 47, 0.8)';
+                ctx.beginPath();
+                ctx.moveTo(centerX - size/2, centerY - size/2);
+                ctx.lineTo(centerX + size/2, centerY + size/2);
+                ctx.moveTo(centerX + size/2, centerY - size/2);
+                ctx.lineTo(centerX - size/2, centerY + size/2);
+                ctx.stroke();
+            }
+        }
+
+        // リリース時の静止画更新
+        function updateSnapshot(frameImage, angle) {
+            snapshotCanvas.width = canvasElement.width;
+            snapshotCanvas.height = canvasElement.height;
+            snapshotCtx.drawImage(frameImage, 0, 0, snapshotCanvas.width, snapshotCanvas.height);
+            snapshotCtx.fillStyle = '#388e3c';
+            snapshotCtx.font = 'bold 42px sans-serif';
+            snapshotCtx.strokeStyle = '#000';
+            snapshotCtx.lineWidth = 6;
+            snapshotCtx.strokeText(`Release: ${angle}°`, 30, 60);
+            snapshotCtx.fillText(`Release: ${angle}°`, 30, 60);
+            snapshotBox.style.display = 'block';
+        }
+
+        // 時間フォーマット変換 (秒 -> 00:00)
+        function formatTime(seconds) {
+            const min = Math.floor(seconds / 60);
+            const sec = Math.floor(seconds % 60);
+            return `${min.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`;
+        }
+
+        // --- コントロールのイベント処理 ---
+
+        uploadInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            
+            maxElbowAngle = 0; 
+            snapshotBox.style.display = 'none';
+
+            const url = URL.createObjectURL(file);
+            videoElement.src = url;
+            videoElement.load();
+            
+            videoElement.onloadeddata = () => {
+                canvasElement.width = videoElement.videoWidth;
+                canvasElement.height = videoElement.videoHeight;
+                
+                videoElement.playbackRate = parseFloat(selectSpeed.value);
+                
+                // シークバーの最大値を動画の総時間に設定
+                seekBar.max = videoElement.duration;
+                seekBar.value = 0;
+                timeDuration.innerText = formatTime(videoElement.duration);
+                
+                videoElement.play();
+                
+                // コントロール類を有効化
+                btnPlayPause.disabled = false;
+                btnBack.disabled = false;
+                btnForward.disabled = false;
+                seekBar.disabled = false;
+                selectSpeed.disabled = false;
+                
+                btnPlayPause.innerText = "一時停止";
+                adviceText.innerText = "🏀 スローモーション解析中...";
+            };
+        });
+
+        // 動画の再生位置が更新されたとき（再生中）
+        videoElement.addEventListener('timeupdate', () => {
+            if (!isUserSeeking) {
+                seekBar.value = videoElement.currentTime;
+                timeCurrent.innerText = formatTime(videoElement.currentTime);
+            }
+        });
+
+        // ユーザーがシークバーをドラッグし始めたとき
+        seekBar.addEventListener('input', () => {
+            isUserSeeking = true;
+            videoElement.currentTime = seekBar.value;
+            timeCurrent.innerText = formatTime(seekBar.value);
+        });
+
+        // ユーザーがシークバーを離したとき
+        seekBar.addEventListener('change', () => {
+            isUserSeeking = false;
+        });
+
+        // ★重要★ スキップ操作やシークバー移動が完了した瞬間のイベント
+        videoElement.addEventListener('seeked', async () => {
+            // 一時停止中であっても、その瞬間の1フレームをAIに強制的に解析させて描画を更新する
+            await pose.send({image: videoElement});
+        });
+
+        // 「一時停止 / 再生」ボタン
+        btnPlayPause.addEventListener('click', () => {
+            if (videoElement.paused) {
+                videoElement.play();
+                btnPlayPause.innerText = "一時停止";
+                btnPlayPause.style.backgroundColor = "#42b72a";
+            } else {
+                videoElement.pause();
+                btnPlayPause.innerText = "再生";
+                btnPlayPause.style.backgroundColor = "#1877f2";
+            }
+        });
+
+        // 「5秒戻る」ボタン
+        btnBack.addEventListener('click', () => {
+            videoElement.currentTime = Math.max(0, videoElement.currentTime - 5);
+        });
+
+        // 「5秒進む」ボタン
+        btnForward.addEventListener('click', () => {
+            videoElement.currentTime = Math.min(videoElement.duration, videoElement.currentTime + 5);
+        });
+
+        // 「再生速度」変更
+        selectSpeed.addEventListener('change', function() {
+            videoElement.playbackRate = parseFloat(this.value);
+        });
+
+        // 映像ループ処理（再生中用）
+        async function processVideo() {
+            if (!videoElement.paused && !videoElement.ended) {
+                await pose.send({image: videoElement});
+            }
+            requestAnimationFrame(processVideo);
+        }
+
+        videoElement.addEventListener('play', processVideo);
+// サービスワーカー（命令書）をブラウザに登録する
+if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('./sw.js')
+    .then(() => console.log('オフライン対応の準備が完了しました！'))
+    .catch((err) => console.error('登録失敗:', err));
+}
+    </script>
+</body>
+</html>
