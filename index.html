@@ -39,7 +39,7 @@
         .seek-bar { flex: 1; height: 8px; cursor: pointer; accent-color: #1877f2; }
         .time-display { font-family: monospace; font-size: 14px; color: #606770; font-weight: bold; min-width: 90px; text-align: center; }
 
-        /* ズームコントロールパネル（追加） */
+        /* ズームコントロールパネル */
         .zoom-controls { background: #f0f2f5; padding: 12px 18px; border-radius: 10px; width: 100%; max-width: 584px; display: flex; gap: 20px; flex-wrap: wrap; justify-content: space-between; box-sizing: border-box; }
         .zoom-item { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 220px; }
         .zoom-item label { font-size: 14px; font-weight: bold; color: #4a5056; white-space: nowrap; }
@@ -142,13 +142,13 @@
         const adviceText = document.getElementById('advice-text');
         const adviceBox = document.getElementById('advice-box');
 
-        // ズーム用要素（追加）
+        // ズーム用要素
         const zoomRange = document.getElementById('zoom-range');
         const zoomVal = document.getElementById('zoom-val');
         const panRange = document.getElementById('pan-range');
         const panVal = document.getElementById('pan-val');
 
-        // 映像切り出し用の隠しキャンバス（追加）
+        // 映像切り出し用の隠しキャンバス
         const cropCanvas = document.createElement('canvas');
         const cropCtx = cropCanvas.getContext('2d');
 
@@ -166,8 +166,7 @@
             minTrackingConfidence: 0.5
         });
 
-        // 2. 動画の切り出し（ズーム・位置調整）を行う関数（追加）
-       // 2. 動画の切り出し（ズーム・位置調整）を行う関数（超軽量化バージョン！）
+        // 2. 動画の切り出し（ズーム・位置調整）を行う関数（超軽量化バージョン！）
         function getCroppedFrame() {
             const zoom = parseFloat(zoomRange.value);
             const pan = parseFloat(panRange.value); // -1.0(左) 〜 1.0(右)
@@ -201,20 +200,6 @@
             // 動画の一部を切り取って、縮小した軽いキャンバスに貼り付ける
             cropCtx.drawImage(videoElement, sx, sy, sw, sh, 0, 0, targetW, targetH);
             
-            return cropCanvas;
-        }
-            
-            // 切り出すサイズ
-            const sw = vw / zoom;
-            const sh = vh / zoom;
-            
-            // 左右のずらし量を計算（panが-1で左端、1で右端、0で中央）
-            const maxOffset = (vw - sw) / 2;
-            const sx = maxOffset + maxOffset * pan;
-            const sy = (vh - sh) / 2; // 上下はジャンピングシュートの高さに対応するため中央固定
-            
-            cropCtx.clearRect(0, 0, vw, vh);
-            cropCtx.drawImage(videoElement, sx, sy, sw, sh, 0, 0, vw, vh);
             return cropCanvas;
         }
 
@@ -375,7 +360,7 @@
             snapshotCanvas.height = canvasElement.height;
             snapshotCtx.drawImage(frameImage, 0, 0, snapshotCanvas.width, snapshotCanvas.height);
             snapshotCtx.fillStyle = '#388e3c';
-            snapshotCtx.font = 'bold 42px sans-serif';
+            snapshotCanvas.getContext('2d').font = 'bold 42px sans-serif'; // 安全にコンテキストを指定
             snapshotCtx.strokeStyle = '#000';
             snapshotCtx.lineWidth = 6;
             snapshotCtx.strokeText(`Release: ${angle}°`, 30, 60);
@@ -389,7 +374,7 @@
             return `${min.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`;
         }
 
-        // スライダーの文字を更新する関数（追加）
+        // スライダーの文字を更新する関数
         function updateZoomLabels() {
             zoomVal.innerText = `${parseFloat(zoomRange.value).toFixed(1)}x`;
             const pan = parseFloat(panRange.value);
@@ -398,7 +383,7 @@
             else panVal.innerText = "中央";
         }
 
-        // スライダーを動かした時に一時停止中でも画面をリアルタイム更新する（追加）
+        // スライダーを動かした時に一時停止中でも画面をリアルタイム更新する
         async function handleZoomInput() {
             updateZoomLabels();
             if (videoElement.readyState >= 2) {
